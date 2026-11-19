@@ -1,0 +1,16 @@
+{
+  "name": "@kurnace/render-revideo",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "dependencies": {
+    "@kurnace/timeline": "workspace:*",
+    "@revideo/2d": "0.11.0",
+    "@revideo/core": "0.11.0",
+    "@revideo/ffmpeg": "0.11.0",
+    "@revideo/renderer": "0.11.0",
+    "@revideo/ui": "0.11.0",
+    "@revideo/vite-plugin": "0.11.0"
+  }
+}

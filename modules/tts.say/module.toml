@@ -1,0 +1,28 @@
+id = "tts.say"
+version = "0.1.0"
+kind = "generator"
+name = "macOS TTS (dev)"
+description = "Local voiceover with the macOS `say` command. Free, offline stand-in for tts.fish while developing."
+runtime = "python"
+entry = "run.py"
+license = "MIT"
+deterministic = true
+
+[requires]
+bins = ["say", "ffmpeg"]
+
+[inputs]
+text  = { type = "string", required = true }
+voice = { type = "string", default = "Samantha", description = "macOS voice name (`say -v '?'`)" }
+speed = { type = "number", default = 1.0, min = 0.5, max = 2.0 }
+
+[outputs]
+audio = { type = "asset", kind = "audio" }
+
+[ui]
+icon = "mic"
+category = "Audio"
+
+[agent]
+expose = true
+cost_hint = "local"

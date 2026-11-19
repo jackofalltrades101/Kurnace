@@ -1,0 +1,32 @@
+id = "tts.fish"
+version = "0.1.0"
+kind = "generator"
+name = "Fish TTS"
+description = "Generate voiceover from text via the Fish Audio API"
+runtime = "python"
+entry = "run.py"
+license = "MIT"
+deterministic = false
+
+[requires]
+env = ["FISH_API_KEY"]
+bins = ["ffmpeg"]
+
+[inputs]
+text  = { type = "string", required = true }
+voice = { type = "string", default = "", description = "Fish voice model id (reference_id); empty = default voice" }
+speed = { type = "number", min = 0.5, max = 2.0, description = "defaults to KURN_FISH_SPEED or 1.0" }
+model = { type = "string", default = "", description = "defaults to KURN_FISH_MODEL or s2.1-pro" }
+
+[outputs]
+audio = { type = "asset", kind = "audio" }
+
+[ui]
+icon = "mic"
+category = "Audio"
+
+[agent]
+expose = true
+cost_hint = "api"
+# Rough per-run estimate used for budget warnings until the API reports cost.
+cost_estimate_usd = 0.002

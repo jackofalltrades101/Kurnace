@@ -1,0 +1,3 @@
+# Kurnace project
+
+@AGENTS.md

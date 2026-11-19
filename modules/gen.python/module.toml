@@ -1,0 +1,26 @@
+id = "gen.python"
+version = "0.1.0"
+kind = "generator"
+name = "Python generator"
+description = "Run a Python script that writes files into $KURN_OUT; every file it writes becomes a library asset (named by file stem). The script gets $KURN_ARGS (JSON) and the seed in $KURN_SEED."
+runtime = "python"
+entry = "run.py"
+license = "MIT"
+# Scripts can read files and the clock; we can't prove determinism. Pass --cached to reuse.
+deterministic = false
+
+[inputs]
+code = { type = "string", description = "inline Python source" }
+file = { type = "string", description = "path to a .py file, relative to the project root" }
+args = { type = "json", default = {}, description = "JSON passed to the script as $KURN_ARGS" }
+
+[outputs]
+assets = { type = "asset" }
+
+[ui]
+icon = "code"
+category = "Generate"
+
+[agent]
+expose = true
+cost_hint = "local"

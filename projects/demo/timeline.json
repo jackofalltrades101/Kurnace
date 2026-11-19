@@ -1,0 +1,146 @@
+{
+  "version": 2,
+  "fps": {
+    "num": 30,
+    "den": 1
+  },
+  "width": 1920,
+  "height": 1080,
+  "duration": 300,
+  "tracks": [
+    {
+      "id": "v1",
+      "kind": "video",
+      "name": "Background",
+      "order": 0.0
+    },
+    {
+      "id": "v2",
+      "kind": "video",
+      "name": "B-roll",
+      "order": 1.0
+    },
+    {
+      "id": "t1",
+      "kind": "text",
+      "name": "Titles",
+      "order": 2.0
+    },
+    {
+      "id": "a1",
+      "kind": "audio",
+      "name": "Tone",
+      "order": 3.0
+    }
+  ],
+  "clips": {
+    "c_bars1": {
+      "track": "v2",
+      "asset": "ast_01M6XVY6KZEKYAZHDH6E2NBXZA",
+      "start": 30,
+      "in": 30,
+      "out": 150,
+      "props": {
+        "scale": 0.6,
+        "y": 80
+      },
+      "keyframes": {
+        "opacity": [
+          {
+            "ease": "easeOutCubic",
+            "t": 0,
+            "v": 0
+          },
+          {
+            "t": 15,
+            "v": 1
+          }
+        ],
+        "x": [
+          {
+            "ease": "easeInOutCubic",
+            "t": 0,
+            "v": -300
+          },
+          {
+            "t": 120,
+            "v": 300
+          }
+        ]
+      }
+    },
+    "c_bars2": {
+      "track": "v2",
+      "asset": "ast_01M6XVY6KZEKYAZHDH6E2NBXZA",
+      "start": 180,
+      "in": 0,
+      "out": 120,
+      "props": {
+        "rotation": -4,
+        "scale": 0.4,
+        "x": 450,
+        "y": 150
+      }
+    },
+    "c_bg": {
+      "track": "v1",
+      "asset": "ast_01M6XVY6D9WVG4A0AJJ9E7MMBM",
+      "start": 0,
+      "in": 0,
+      "out": 300,
+      "props": {
+        "fit": "cover"
+      }
+    },
+    "c_title": {
+      "track": "t1",
+      "component": "text",
+      "start": 0,
+      "in": 0,
+      "out": 300,
+      "props": {
+        "fill": "#ffffff",
+        "fontSize": 110,
+        "text": "Kurnace — Phase 0",
+        "y": -380
+      },
+      "keyframes": {
+        "opacity": [
+          {
+            "t": 0,
+            "v": 0
+          },
+          {
+            "t": 20,
+            "v": 1
+          },
+          {
+            "t": 270,
+            "v": 1
+          },
+          {
+            "t": 299,
+            "v": 0
+          }
+        ]
+      }
+    },
+    "c_tone": {
+      "track": "a1",
+      "asset": "ast_01M6XVY6QTWJ336GKHYTVE5A27",
+      "start": 0,
+      "in": 0,
+      "out": 240,
+      "props": {
+        "volume": 0.5
+      }
+    }
+  },
+  "markers": {
+    "m_01": {
+      "t": 180,
+      "label": "second shot"
+    }
+  },
+  "transitions": {}
+}

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg"],
+    "externalBin": ["binaries/kurn"],
+    "resources": {
+      "resources/modules": "modules",
+      "resources/bin": "bin",
+      "resources/puppeteer": "puppeteer"
+    }
+  }
+}

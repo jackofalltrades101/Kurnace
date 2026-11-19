@@ -1,0 +1,8 @@
+#!/bin/sh
+# Dev shim: run the Rust CLI, building it first if needed.
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+BIN="$ROOT/target/debug/kurn"
+if [ ! -x "$BIN" ]; then
+  PATH="$HOME/.cargo/bin:$PATH" cargo build -q -p kurn --manifest-path "$ROOT/Cargo.toml" >&2 || exit 1
+fi
+exec "$BIN" "$@"

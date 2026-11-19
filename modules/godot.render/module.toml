@@ -1,0 +1,32 @@
+id = "godot.render"
+version = "0.1.0"
+kind = "generator"
+name = "Godot 4.7.2 (.NET/C#) render"
+description = "Render a C# Godot 4.7.2 project to a PNG frame sequence with the headless movie writer. Requires the Godot 4.7.2 .NET build; GDScript-only projects are rejected."
+runtime = "python"
+entry = "run.py"
+license = "MIT"
+# Projects can use time/random, so don't claim recipe-cache determinism.
+deterministic = false
+
+[requires]
+bins = ["dotnet"]
+
+[inputs]
+source  = { type = "asset", kind = "godot", required = true, description = "tree-hashed Godot project (project.godot + .csproj + C# scripts)" }
+scene   = { type = "string", default = "", description = "scene path, e.g. res://Scenes/Shot.tscn (empty = project main scene)" }
+frames  = { type = "integer", default = 60, min = 1, max = 1800 }
+fps     = { type = "integer", default = 30, min = 1, max = 120 }
+width   = { type = "integer", default = 640, min = 16, max = 7680 }
+height  = { type = "integer", default = 360, min = 16, max = 4320 }
+
+[outputs]
+frames = { type = "asset", kind = "seq" }
+
+[ui]
+icon = "cube"
+category = "3D"
+
+[agent]
+expose = true
+cost_hint = "local"

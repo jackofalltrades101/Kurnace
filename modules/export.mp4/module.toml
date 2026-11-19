@@ -1,0 +1,29 @@
+id = "export.mp4"
+version = "0.1.0"
+kind = "exporter"
+name = "MP4 export presets"
+description = "Package a rendered video for a destination: youtube (1080p pad), vertical (1080x1920 crop), square, or web"
+runtime = "python"
+entry = "run.py"
+license = "MIT"
+deterministic = true
+
+[requires]
+bins = ["ffmpeg", "ffprobe"]
+
+[inputs]
+input  = { type = "string", required = true, description = "video path, relative to the project root or absolute" }
+preset = { type = "string", default = "youtube", description = "youtube | vertical | square | web" }
+out    = { type = "string", required = true, description = "output path, relative to the project root or absolute" }
+crf    = { type = "integer", default = 20, min = 0, max = 51 }
+
+[outputs]
+file = { type = "file" }
+
+[ui]
+icon = "film"
+category = "Export"
+
+[agent]
+expose = true
+cost_hint = "local"

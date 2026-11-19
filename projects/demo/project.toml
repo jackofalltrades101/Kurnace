@@ -1,0 +1,8 @@
+name = "Phase 0 Demo"
+fps = "30/1"
+width = 1920
+height = 1080
+
+[render]
+preset = "1080p30"
+encoder = "auto"

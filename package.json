@@ -1,0 +1,14 @@
+{
+  "name": "kurnace",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "packageManager": "pnpm@10.30.3",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test 'packages/*/test/*.test.ts' 'modules/*/test/*.test.ts' 'app/test/*.test.ts'",
+    "test:unit": "node --test 'packages/*/test/*.test.ts' 'app/test/*.test.ts'"
+  }
+}

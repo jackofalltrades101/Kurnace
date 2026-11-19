@@ -1,0 +1,28 @@
+# Spoken-word narration (spec §11). Tweak values here, not code.
+highpass_hz = 80
+
+# Peaking EQ bands: f = center Hz, width_q, gain_db
+[[eq]]
+f = 250
+width_q = 1.0
+gain_db = -2.0   # tame boxiness
+[[eq]]
+f = 3500
+width_q = 1.2
+gain_db = 2.0    # presence
+
+[compressor]
+threshold_db = -20
+ratio = 3
+attack_ms = 5
+release_ms = 80
+makeup_db = 2
+
+[deesser]
+intensity = 0.4   # 0..1
+frequency = 0.55  # 0..1 of Nyquist
+
+[loudness]
+target_lufs = -16
+true_peak_db = -1.5
+lra = 11

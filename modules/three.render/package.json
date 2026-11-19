@@ -1,0 +1,11 @@
+{
+  "name": "@kurnace/render-three",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "dependencies": {
+    "puppeteer": "25.16.0",
+    "three": "0.180.0"
+  }
+}

@@ -1,0 +1,29 @@
+id = "audio.clean"
+version = "0.1.0"
+kind = "generator"
+name = "Voice cleanup"
+description = "Denoise (DeepFilterNet if installed) + highpass, EQ, compression, de-ess and two-pass loudness normalization, from a named preset"
+runtime = "python"
+entry = "run.py"
+license = "MIT"
+deterministic = true
+
+[requires]
+bins = ["ffmpeg"]
+
+[inputs]
+input       = { type = "asset", kind = "audio", required = true }
+preset      = { type = "string", default = "voice-narrator", description = "presets/<name>.toml" }
+target_lufs = { type = "number", min = -30, max = -6, description = "override the preset's loudness target" }
+denoise     = { type = "bool", default = true, description = "use DeepFilterNet (`deep-filter`) when it's on PATH" }
+
+[outputs]
+audio = { type = "asset", kind = "audio" }
+
+[ui]
+icon = "wand"
+category = "Audio"
+
+[agent]
+expose = true
+cost_hint = "local"
