@@ -5,7 +5,7 @@
 // core (`op.apply`) so the human and agents share one writer.
 import { DEFAULT_PROPS, sampleLane, type Clip, type Ease, type Timeline as TTimeline, type Track } from '@kurnace/timeline';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { type Presence, actorCanvasColor, call, peaksUrl, thumbUrl } from './kurn';
+import { type Presence, actorCanvasColor, call, peaksUrl, revealPath, thumbUrl } from './kurn';
 import { type ResolvedAsset } from './Preview';
 import { chooseTickStep, clamp, clipEnd, clipLen, frameAtX, snapCandidates, snapFrame, timecode, trimEnd, trimStart } from './timelineEdit';
 import type { Change } from './useProject';
@@ -107,6 +107,10 @@ export interface TimelineProps {
   lastChange: Change | null;
   onSeek: (frame: number) => void;
   onSeekEnd?: (frame: number) => void;
+  /** Optimistic op runner (optimistic.ts); edits show before the core confirms. */
+  run: (op: Op) => Promise<{ status?: string; reason?: string } | null>;
+  /** Selection changes (for the inspector). */
+  onSelectionChange?: (ids: string[]) => void;
 }
 
 export function Timeline(props: TimelineProps) {
@@ -119,7 +123,11 @@ export function Timeline(props: TimelineProps) {
   const [scrollY, setScrollY] = useState(0);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [selectedKf, setSelectedKf] = useState<{ clip: string; prop: string; t: number } | null>(null);
-  const [drag, setDrag] = useState<Drag | null>(null);
+  const [drag, setDragState] = useState<Drag | null>(null);
+  const dragRef = useRef<Drag | null>(null);
+  // Keep the ref in step synchronously: pointerup can fire before React renders
+  // the last pointermove, and the drop must use the final position.
+  const setDrag = useCallback((d: Drag | null) => { dragRef.current = d; setDragState(d); }, []);
   const [snapOn, setSnapOn] = useState(true);
   const [tool, setTool] = useState<'select' | 'razor'>('select');
   const [error, setError] = useState<string | null>(null);
@@ -128,10 +136,10 @@ export function Timeline(props: TimelineProps) {
   const [resTick, setResTick] = useState(0);
   const resRef = useRef(new Map<string, { img?: HTMLImageElement; peaks?: number[]; peakMax?: number; state: 'loading' | 'ok' | 'err' }>());
   const didFit = useRef(false);
-  const dragRef = useRef<Drag | null>(null);
-  dragRef.current = drag;
 
   const single = selected.size === 1 ? [...selected][0] : null;
+  const onSel = props.onSelectionChange;
+  useEffect(() => { onSel?.([...selected]); }, [selected, onSel]);
   const rows = useMemo(() => buildRows(tl, single), [tl, single]);
   const contentH = rows.length ? rows[rows.length - 1].top + rows[rows.length - 1].height + 6 : RULER_H;
   const viewH = Math.max(0, size.h - SCROLLBAR);
@@ -236,16 +244,7 @@ export function Timeline(props: TimelineProps) {
   };
 
   // ---- ops ----
-  const runOp = useCallback(async (op: Op) => {
-    try {
-      const r = await call<{ status?: string; reason?: string }>('op.apply', { project, op });
-      if (r?.status === 'pending') setError(r.reason ?? 'Waiting for human approval');
-      return r;
-    } catch (e) {
-      setError(String(e));
-      return null;
-    }
-  }, [project]);
+  const runOp = props.run;
 
   const runOps = useCallback(async (ops: Op[]) => {
     if (ops.length === 0) return;
@@ -255,6 +254,186 @@ export function Timeline(props: TimelineProps) {
   const runMethod = useCallback(async (method: string) => {
     try { await call(method, { project }); } catch (e) { setError(String(e)); }
   }, [project]);
+
+  // Test hook: screen geometry for scripted UI sessions (app/scripts/ui-shot.mjs --script).
+  useEffect(() => {
+    (window as unknown as { __kurnTimelineUI?: unknown }).__kurnTimelineUI = {
+      /** Client x of frame `f` and client y of the middle of track `id`. */
+      point(f: number, trackId: string) {
+        const r = canvasRef.current?.getBoundingClientRect();
+        const row = rows.find(x => x.kind === 'track' && x.id === trackId);
+        if (!r || !row) return null;
+        return { x: r.left + LABEL_W + (f - scrollX) * pxPerFrame, y: r.top + row.top - scrollY + row.height / 2 };
+      },
+      pxPerFrame,
+    };
+  }, [rows, scrollX, scrollY, pxPerFrame]);
+
+  // ---- drop: library assets, project scenes, files from Finder ----
+  type DropItem = { asset?: string; scene?: string };
+  const [dropAt, setDropAt] = useState<{ x: number; frame: number; trackId: string | null } | null>(null);
+  const trackRowAt = (y: number) => {
+    const cy = y + scrollY;
+    const row = rows.find(r => r.kind === 'track' && cy >= r.top && cy < r.top + r.height);
+    return row && row.kind === 'track' ? row.track : null;
+  };
+  const placement = (x: number, y: number) => ({
+    frame: clamp(Math.round(frameAtX(Math.max(0, x - LABEL_W), scrollX, pxPerFrame)), 0, Math.max(duration, 0) + 100000),
+    track: trackRowAt(y),
+  });
+  const VISUAL = new Set(['video', 'component', 'text', '3d']);
+  const placeItems = useCallback(async (items: DropItem[], x: number, y: number) => {
+    if (!items.length) return;
+    let { frame: at, track } = placement(x, y);
+    const ops: Op[] = [];
+    const newTracks = new Map<string, string>(); // kind → new track id (one per kind per drop)
+    const occupied = (trackId: string, from: number, to: number) =>
+      Object.values(tl.clips).some(c => c.track === trackId && c.start < to && clipEnd(c) > from);
+    for (const it of items) {
+      let kind = 'video', len = Math.round(5 * fps);
+      if (it.asset) {
+        const a = await call<{ kind: string; duration_s?: number; frames?: string[]; fps_num?: number; fps_den?: number }>('lib.get', { id: it.asset }).catch(() => null);
+        if (!a) { setError(`unknown asset ${it.asset}`); continue; }
+        kind = a.kind === 'audio' ? 'audio' : 'video';
+        if ((a.kind === 'video' || a.kind === 'audio') && a.duration_s) len = Math.max(1, Math.round(a.duration_s * fps));
+        if (a.kind === 'seq' && a.frames?.length) len = Math.max(1, Math.round(a.frames.length * fps / (a.fps_num && a.fps_den ? a.fps_num / a.fps_den : fps)));
+      } else if (it.scene) {
+        const sc = await call<{ name: string; duration?: number | null }[]>('scenes.list', { project }).catch(() => []);
+        const d = sc.find(x => x.name === it.scene)?.duration;
+        if (d) len = d;
+        kind = 'component';
+      }
+      const fits = (t: Track | null) => !!t && !t.locked && (kind === 'audio' ? t.kind === 'audio' : VISUAL.has(t.kind)) && !occupied(t.id, at, at + len);
+      let trackId: string;
+      if (fits(track)) trackId = track!.id;
+      else {
+        const key = kind === 'audio' ? 'audio' : 'video';
+        if (!newTracks.has(key)) {
+          const id = `t_${Math.random().toString(36).slice(2, 8)}`;
+          newTracks.set(key, id);
+          ops.push({ type: 'track.add', args: { id, kind: key, ...(key === 'audio' ? { order: Math.min(0, ...tl.tracks.map(t => t.order)) - 1 } : {}) } });
+        }
+        trackId = newTracks.get(key)!;
+      }
+      ops.push({ type: 'clip.add', args: { track: trackId, start: at, dur: len, ...(it.asset ? { asset: it.asset } : { scene: it.scene }) } });
+      at += len;
+    }
+    if (ops.length) await runOps(ops);
+  }, [tl, rows, scrollX, scrollY, pxPerFrame, fps, project]);
+
+  const dragItems = (dt: DataTransfer): DropItem[] => {
+    const asset = dt.getData('application/x-kurn-asset') || (/^ast_/.test(dt.getData('text/plain')) ? dt.getData('text/plain') : '');
+    const scene = dt.getData('application/x-kurn-scene');
+    return asset ? [{ asset }] : scene ? [{ scene }] : [];
+  };
+  const onDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    const types = [...e.dataTransfer.types];
+    if (!types.some(t => t === 'application/x-kurn-asset' || t === 'application/x-kurn-scene' || t === 'text/plain')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    const r = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - r.left, y = e.clientY - r.top;
+    const pl = placement(x, y);
+    setDropAt({ x: LABEL_W + (pl.frame - scrollX) * pxPerFrame, frame: pl.frame, trackId: pl.track?.id ?? null });
+  };
+  const onDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setDropAt(null);
+    const r = e.currentTarget.getBoundingClientRect();
+    void placeItems(dragItems(e.dataTransfer), e.clientX - r.left, e.clientY - r.top);
+  };
+  // Files dropped from Finder are imported by the Library, which then asks us to place them.
+  useEffect(() => {
+    const onPlace = (ev: Event) => {
+      const { ids, clientX, clientY } = (ev as CustomEvent<{ ids: string[]; clientX: number; clientY: number }>).detail;
+      const r = wrapRef.current?.getBoundingClientRect();
+      if (!r) return;
+      void placeItems(ids.map(asset => ({ asset })), clientX - r.left, clientY - r.top);
+    };
+    window.addEventListener('kurn-place-assets', onPlace);
+    return () => window.removeEventListener('kurn-place-assets', onPlace);
+  }, [placeItems]);
+
+  // ---- context menus ----
+  type MenuItem = { label: string; run: () => void; danger?: boolean; disabled?: boolean } | 'sep';
+  const [menu, setMenu] = useState<{ x: number; y: number; title?: string; items: MenuItem[] } | null>(null);
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close(); };
+    window.addEventListener('pointerdown', close);
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('blur', close);
+    return () => { window.removeEventListener('pointerdown', close); window.removeEventListener('keydown', onKey); window.removeEventListener('blur', close); };
+  }, [menu]);
+
+  const onContextMenu = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left, y = e.clientY - rect.top;
+    const hit = hitAt(x, y);
+    const at = clamp(Math.round(frameAtX(Math.max(0, x - LABEL_W), scrollX, pxPerFrame)), 0, duration);
+    const items: MenuItem[] = [];
+    let title: string | undefined;
+    if (hit.type === 'clip') {
+      const id = hit.id;
+      const c = tl.clips[id];
+      if (!selected.has(id)) setSelected(new Set([id]));
+      const ids = selected.has(id) ? [...selected] : [id];
+      const sc = (c as Clip & { scene?: string }).scene;
+      title = ids.length > 1 ? `${ids.length} clips` : sc ? `scene · ${sc}` : c.component ?? (c.asset ? assets[c.asset]?.name ?? c.asset : id);
+      const inside = frame > c.start && frame < clipEnd(c);
+      items.push(
+        { label: 'Split at playhead', disabled: !inside, run: () => void runOps(ids.filter(i => tl.clips[i] && frame > tl.clips[i].start && frame < clipEnd(tl.clips[i])).map(i => ({ type: 'clip.split', args: { clip: i, at: frame } }))) },
+        { label: 'Duplicate after', run: () => {
+          const x = c as Clip & { scene?: string; params?: Record<string, unknown> };
+          void runOp({ type: 'clip.add', args: {
+            track: c.track, start: clipEnd(c), in: c.in, out: c.out, props: c.props ?? {}, keyframes: c.keyframes ?? {},
+            ...(c.asset ? { asset: c.asset } : x.scene ? { scene: x.scene, params: x.params ?? {} } : { component: c.component }),
+          } });
+        } },
+        { label: 'Move playhead to clip start', run: () => props.onSeek(c.start) },
+        ...((): MenuItem[] => {
+          // Transitions need a clip that starts exactly where this one ends, on the same track.
+          const next = Object.entries(tl.clips).find(([oid, o]) => oid !== id && o.track === c.track && o.start === clipEnd(c));
+          if (!next) return [];
+          const existing = Object.entries(tl.transitions ?? {}).find(([, t]) => t.between[0] === id && t.between[1] === next[0]);
+          if (existing) return [{ label: `Remove ${existing[1].type} into next clip`, run: () => void runOp({ type: 'transition.remove', args: { transition: existing[0] } }) }];
+          const dur = Math.max(2, Math.round(fps / 2));
+          return (['crossfade', 'dip', 'wipe', 'slide'] as const).map(type => ({
+            label: `${type[0].toUpperCase()}${type.slice(1)} into next clip (${dur} f)`,
+            run: () => void runOp({ type: 'transition.set', args: { between: [id, next[0]], type, dur } }),
+          }));
+        })(),
+        'sep',
+        ...(sc ? [{ label: 'Show scene files', run: () => void revealPath(`${project}/scenes/${sc}`) } as MenuItem] : []),
+        { label: 'Copy clip id', run: () => void navigator.clipboard.writeText(ids.join(' ')) },
+        'sep',
+        { label: 'Delete', danger: true, run: () => { void runOps(ids.map(i => ({ type: 'clip.remove', args: { clip: i } }))); setSelected(new Set()); } },
+        { label: 'Ripple delete (close gap)', danger: true, run: () => { void runOps(ids.map(i => ({ type: 'ripple.delete', args: { clip: i } }))); setSelected(new Set()); } },
+      );
+    } else if (hit.type === 'empty' && hit.track && x < LABEL_W) {
+      const t = tl.tracks.find(t => t.id === hit.track)!;
+      title = t.name ?? t.id;
+      items.push(
+        { label: t.muted ? 'Unmute' : 'Mute', run: () => void runOp({ type: 'track.set', args: { track: t.id, muted: !t.muted } }) },
+        { label: t.locked ? 'Unlock' : 'Lock', run: () => void runOp({ type: 'track.set', args: { track: t.id, locked: !t.locked } }) },
+        'sep',
+        { label: 'Add video track above', run: () => void runOp({ type: 'track.add', args: { kind: 'video', order: t.order + 0.5 } }) },
+        { label: 'Add audio track below', run: () => void runOp({ type: 'track.add', args: { kind: 'audio', order: t.order - 0.5 } }) },
+        'sep',
+        { label: 'Delete track and its clips', danger: true, disabled: t.locked, run: () => void runOp({ type: 'track.remove', args: { track: t.id } }) },
+      );
+    } else {
+      items.push(
+        { label: `Add marker at ${timecode(at, tl.fps)}`, run: () => void runOp({ type: 'marker.add', args: { t: at, label: `marker ${at}` } }) },
+        { label: 'Add video track', run: () => void runOp({ type: 'track.add', args: { kind: 'video' } }) },
+        { label: 'Add audio track', run: () => void runOp({ type: 'track.add', args: { kind: 'audio', order: Math.min(0, ...tl.tracks.map(t => t.order)) - 1 } }) },
+      );
+    }
+    const wrap = wrapRef.current!.getBoundingClientRect();
+    setMenu({ x: e.clientX - wrap.left, y: e.clientY - wrap.top, title, items });
+  };
 
   // ---- editing actions ----
   const split = () => {
@@ -536,6 +715,20 @@ export function Timeline(props: TimelineProps) {
         ctx.fillText(p.actor.name, x + 4, 8 + (pi % 2) * 10);
         pi++;
       }
+    }
+
+    // transitions: a bow-tie over the cut, spanning the transition window
+    for (const t of Object.values(tl.transitions ?? {})) {
+      const a = tl.clips[t.between[0]], b = tl.clips[t.between[1]];
+      const row = a ? rowByTrack.get(a.track) : undefined;
+      if (!a || !b || !row) continue;
+      const from = b.start - Math.floor(t.dur / 2);
+      const x0 = xOf(from), x1 = xOf(from + t.dur);
+      const y0 = row.top - scrollY + CLIP_INSET, y1 = y0 + TRACK_H - CLIP_INSET * 2 - ROW_GAP;
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
+      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.lineTo(x1, y0); ctx.lineTo(x0, y1); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+      ctx.strokeRect(x0 + 0.5, y0 + 0.5, x1 - x0 - 1, y1 - y0 - 1);
     }
 
     // snap line
@@ -997,7 +1190,7 @@ export function Timeline(props: TimelineProps) {
         ))}
         <span className="muted">{Object.keys(tl.clips).length} clips · {Object.keys(tl.markers ?? {}).length} markers</span>
       </div>
-      <div className="tl-wrap" ref={wrapRef}>
+      <div className="tl-wrap" ref={wrapRef} onDragOver={onDragOver} onDragLeave={() => setDropAt(null)} onDrop={onDrop}>
         <canvas
           ref={canvasRef}
           className={`tl-canvas${tool === 'razor' ? ' tool-razor' : ''}`}
@@ -1011,7 +1204,22 @@ export function Timeline(props: TimelineProps) {
           onPointerUp={onPointerUp}
           onPointerCancel={onPointerUp}
           onDoubleClick={onDoubleClick}
+          onContextMenu={onContextMenu}
         />
+        {menu && (
+          <div className="ctx-menu" role="menu" style={{ left: Math.min(menu.x, size.w - 220), top: Math.min(menu.y, Math.max(0, size.h - 24 - menu.items.length * 26)) }}
+               onPointerDown={e => e.stopPropagation()}>
+            {menu.title && <div className="ctx-title">{menu.title}</div>}
+            {menu.items.map((it, i) => it === 'sep'
+              ? <div key={i} className="ctx-sep" role="separator" />
+              : <button key={i} role="menuitem" className={it.danger ? 'danger' : ''} disabled={it.disabled} onClick={() => { setMenu(null); it.run(); }}>{it.label}</button>)}
+          </div>
+        )}
+        {dropAt && (
+          <div className="tl-drop" style={{ left: dropAt.x }} aria-hidden>
+            <span>{timecode(dropAt.frame, tl.fps)}{dropAt.trackId ? '' : ' · new track'}</span>
+          </div>
+        )}
         {error && <div className="tl-error" role="alert">{error}</div>}
       </div>
     </section>

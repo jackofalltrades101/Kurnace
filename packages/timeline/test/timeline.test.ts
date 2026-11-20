@@ -61,3 +61,31 @@ test('timelineFromDocJSON reads the Rust core layout', async () => {
   assert.deepEqual(tl.clips.c.keyframes!.x.map(k => k.t), [0, 10]);
   assert.equal(timelineFromDocJSON({}), null);
 });
+
+test('applyOp mirrors the core for the ops the UI makes', async () => {
+  const { applyOp } = await import('../src/apply.ts');
+  let t: any = {
+    version: 2, fps: { num: 30, den: 1 }, width: 1920, height: 1080, duration: 100,
+    tracks: [{ id: 'v1', kind: 'video', order: 0 }],
+    clips: { a: { track: 'v1', asset: 'x', start: 0, in: 10, out: 110, keyframes: { opacity: [{ t: 0, v: 0 }, { t: 60, v: 1 }] } },
+             b: { track: 'v1', asset: 'x', start: 100, in: 0, out: 50 } },
+  };
+  const before = JSON.stringify(t);
+  t = applyOp(t, { type: 'clip.split', args: { clip: 'a', at: 40 } });
+  const right = Object.keys(t.clips).find(k => k.startsWith('c_local_split'))!;
+  assert.deepEqual([t.clips.a.out, t.clips[right].start, t.clips[right].in], [50, 40, 50], "in=10 → cut at source 50");
+  assert.deepEqual(t.clips[right].keyframes.opacity, [{ t: 20, v: 1 }]);
+  t = applyOp(t, { type: 'ripple.delete', args: { clip: right } });
+  assert.equal(t.clips.b.start, 40);
+  t = applyOp(t, { type: 'batch', args: { ops: [
+    { type: 'clip.move', args: { clip: 'b', by: 300 } },
+    { type: 'clip.set', args: { clip: 'b', props: { opacity: 0.5 } } },
+    { type: 'keyframe.set', args: { clip: 'b', prop: 'x', t: 5, v: 9, ease: 'easeOutCubic' } },
+  ] } });
+  assert.equal(t.clips.b.start, 340);
+  assert.equal(t.duration, 390, 'duration grows to fit');
+  assert.equal(t.clips.b.props.opacity, 0.5);
+  assert.deepEqual(t.clips.b.keyframes.x, [{ t: 5, v: 9, ease: 'easeOutCubic' }]);
+  assert.equal(JSON.stringify(applyOp(t, { type: 'clip.move', args: { clip: 'nope', start: 1 } })), JSON.stringify(t), 'bad op is a no-op');
+  assert.notEqual(JSON.stringify(t), before);
+});

@@ -40,6 +40,7 @@ export function useProject(project: string | null): ProjectState & {
   refreshPending: () => void;
   boardDoc: Y.Doc | null;
   boardRev: number;
+  sceneRev: Record<string, number>;
 } {
   const [st, setSt] = useState<ProjectState>({ status: 'connecting', timeline: null, ops: [], pending: [], presence: [], lastChange: null, rev: 0 });
   const docRef = useRef<Y.Doc | null>(null);
@@ -47,6 +48,8 @@ export function useProject(project: string | null): ProjectState & {
   const [boardRev, setBoardRev] = useState(0);
   // Bumped to re-subscribe after the core restarts (stream closed).
   const [generation, setGeneration] = useState(0);
+  // Bumped per scene when its files change on disk (hot reload).
+  const [sceneRev, setSceneRev] = useState<Record<string, number>>({});
 
   const refreshPending = () => {
     if (!project) return;
@@ -118,6 +121,9 @@ export function useProject(project: string | null): ProjectState & {
           setSt(s => ({ ...s, ops: [e.event.record, ...s.ops].slice(0, 500) }));
           refreshPending();
           break;
+        case 'scene':
+          setSceneRev(r => ({ ...r, [e.event.name]: (r[e.event.name] ?? 0) + 1 }));
+          break;
         case 'presence':
           setSt(s => ({ ...s, presence: e.event.presence }));
           break;
@@ -145,5 +151,5 @@ export function useProject(project: string | null): ProjectState & {
     };
   }, [project, generation]);
 
-  return { ...st, refreshPending, boardDoc: boardDocRef.current, boardRev };
+  return { ...st, refreshPending, boardDoc: boardDocRef.current, boardRev, sceneRev };
 }

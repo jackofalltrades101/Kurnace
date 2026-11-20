@@ -17,6 +17,7 @@ anyhow = "1"
 thiserror = "2"
 hex = "0.4"
 base64 = "0.22"
+notify = "8"
 
 [dev-dependencies]
 tempfile = "3"

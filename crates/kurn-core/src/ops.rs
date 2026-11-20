@@ -71,7 +71,7 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("track.set", "{track, name?, muted?, locked?}"),
     (
         "clip.add",
-        "{track, asset? | component?, start, in?=0, out? | dur?, props?, keyframes?, id?} → {clip}",
+        "{track, asset? | scene? (+ params?) | component?, start, in?=0, out? | dur?, props?, keyframes?, id?} → {clip}",
     ),
     ("clip.remove", "{clip}"),
     ("clip.move", "{clip, start? | by?, track?}"),
@@ -79,7 +79,7 @@ pub const CATALOG: &[(&str, &str)] = &[
     ("clip.split", "{clip, at}  (timeline frame) → {left, right}"),
     (
         "clip.set",
-        "{clip, props?: {k: v|null}, asset?, offset_samples?}",
+        "{clip, props?: {k: v|null}, params?: {k: v|null}, asset?, scene?, offset_samples?}",
     ),
     (
         "keyframe.set",
@@ -306,6 +306,8 @@ pub fn apply(txn: &mut TransactionMut, root: &MapRef, op: &Op) -> Result<Value> 
                 track: track.into(),
                 asset: a.get("asset").and_then(Value::as_str).map(String::from),
                 component: a.get("component").and_then(Value::as_str).map(String::from),
+                scene: a.get("scene").and_then(Value::as_str).map(String::from),
+                params: a.get("params").and_then(Value::as_object).cloned().unwrap_or_default(),
                 start: i(a, "start")?,
                 in_,
                 out,
@@ -430,7 +432,13 @@ pub fn apply(txn: &mut TransactionMut, root: &MapRef, op: &Op) -> Result<Value> 
                     set(txn, &props, k, v);
                 }
             }
-            for k in ["asset", "component", "offset_samples"] {
+            if let Some(p) = a.get("params").and_then(Value::as_object) {
+                let params = ensure_map(txn, &m, "params");
+                for (k, v) in p {
+                    set(txn, &params, k, v);
+                }
+            }
+            for k in ["asset", "component", "scene", "offset_samples"] {
                 if let Some(v) = a.get(k) {
                     set(txn, &m, k, v);
                 }

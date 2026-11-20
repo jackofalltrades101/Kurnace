@@ -1,0 +1,12 @@
+{
+  "name": "@kurnace/render-compositor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "dependencies": {
+    "@kurnace/timeline": "workspace:*",
+    "@kurnace/compositor": "workspace:*",
+    "puppeteer": "25.16.0"
+  }
+}

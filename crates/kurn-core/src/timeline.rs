@@ -35,6 +35,12 @@ pub struct Clip {
     pub asset: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub component: Option<String>,
+    /// HTML scene in the project's `scenes/<name>/` (docs/v2-plan.md §3.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene: Option<String>,
+    /// Scene parameters (posted to the scene; also exposed as CSS variables).
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub params: Map<String, Value>,
     pub start: i64,
     #[serde(rename = "in")]
     pub in_: i64,
@@ -164,8 +170,12 @@ pub fn validate(tl: &Timeline, known_assets: Option<&HashSet<String>>) -> Vec<Is
         if !ids.contains(c.track.as_str()) {
             err(format!("clip {id}: unknown track {}", c.track));
         }
-        if c.asset.is_none() && c.component.is_none() {
-            err(format!("clip {id}: needs asset or component"));
+        let sources = [c.asset.is_some(), c.component.is_some(), c.scene.is_some()].iter().filter(|x| **x).count();
+        if sources > 1 {
+            err(format!("clip {id}: has more than one of asset/component/scene"));
+        }
+        if sources == 0 {
+            err(format!("clip {id}: needs an asset, component or scene"));
         }
         if let (Some(a), Some(known)) = (&c.asset, known_assets) {
             if !known.contains(a) {
@@ -200,12 +210,6 @@ pub fn validate(tl: &Timeline, known_assets: Option<&HashSet<String>>) -> Vec<Is
             ),
         });
     }
-    if !tl.transitions.is_empty() {
-        out.push(Issue {
-            level: Level::Warn,
-            msg: "transitions are not rendered yet; they are ignored".into(),
-        });
-    }
     out
 }
 
@@ -236,6 +240,8 @@ mod tests {
             track: "v1".into(),
             asset: Some("x".into()),
             component: None,
+            scene: None,
+            params: Map::new(),
             start,
             in_: 0,
             out: len,

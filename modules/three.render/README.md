@@ -39,5 +39,5 @@ kurn run three.render --scene '{"objects":[{"type":"box","rotationSpeed":[0.2,0.
 
 Output is a `frames` directory asset (`kind = seq`) plus a deterministic
 `kurn.json` with `fps_num/fps_den`, `frames`, `width`, `height`,
-`engine: three`, `language: javascript`. `render.revideo` plays it on the
+`engine: three`, `language: javascript`. `render.compositor` plays it on the
 timeline.

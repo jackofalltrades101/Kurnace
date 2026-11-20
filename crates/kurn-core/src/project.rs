@@ -245,9 +245,51 @@ pub enum Push {
     Presence(Vec<Presence>),
     /// Full pending-confirmation snapshot after a change.
     Pending(Vec<PendingOp>),
+    /// Files in `scenes/<name>/` changed (hot reload in the preview).
+    Scene { name: String },
 }
 
 pub type Subscribers = Arc<Mutex<Vec<std::sync::mpsc::Sender<Push>>>>;
+
+/// Watch `scenes/` and push one Push::Scene per changed scene, coalescing the
+/// burst of events editors and agents produce for a single save (~80 ms).
+fn start_scene_watcher(root: &Path, subs: Subscribers) -> Option<notify::RecommendedWatcher> {
+    use notify::Watcher;
+    let dir = crate::scenes::scenes_dir(root);
+    if fs::create_dir_all(&dir).is_err() {
+        return None;
+    }
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let base = dir.canonicalize().unwrap_or(dir.clone());
+    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        let Ok(ev) = res else { return };
+        if matches!(ev.kind, notify::EventKind::Access(_)) {
+            return;
+        }
+        for p in ev.paths {
+            let p = p.canonicalize().unwrap_or(p);
+            if let Ok(rel) = p.strip_prefix(&base) {
+                if let Some(first) = rel.components().next() {
+                    let _ = tx.send(first.as_os_str().to_string_lossy().into_owned());
+                }
+            }
+        }
+    })
+    .ok()?;
+    watcher.watch(&dir, notify::RecursiveMode::Recursive).ok()?;
+    std::thread::spawn(move || {
+        while let Ok(first) = rx.recv() {
+            let mut names = std::collections::BTreeSet::from([first]);
+            while let Ok(more) = rx.recv_timeout(Duration::from_millis(80)) {
+                names.insert(more);
+            }
+            for name in names {
+                fan_out(&subs, Push::Scene { name });
+            }
+        }
+    });
+    Some(watcher)
+}
 
 fn fan_out(subs: &Subscribers, msg: Push) {
     // Drop subscribers whose receiver is gone.
@@ -267,6 +309,8 @@ pub struct Project {
     board_store_err: Arc<Mutex<Option<String>>>,
     /// Live subscribers (the app's webview replica, activity feeds): doc updates and op records.
     subscribers: Subscribers,
+    /// Watches `scenes/` and pushes Push::Scene for hot reload.
+    _scene_watcher: Option<notify::RecommendedWatcher>,
     undo: HashMap<String, UndoManager>,
     board_undo: HashMap<String, UndoManager>,
     last_doc: HashMap<String, &'static str>,
@@ -381,6 +425,7 @@ impl Project {
             board_store,
             store_err,
             board_store_err,
+            _scene_watcher: start_scene_watcher(&root, subscribers.clone()),
             subscribers,
             undo: HashMap::new(),
             board_undo: HashMap::new(),
@@ -630,7 +675,18 @@ impl Project {
         let tl = ydoc::read_timeline(&scratch.transact(), &sroot)?;
         let refs: HashSet<String> = tl.clips.values().filter_map(|c| c.asset.clone()).collect();
         let known: HashSet<String> = refs.into_iter().filter(|a| asset_exists(a)).collect();
-        let issues = timeline::validate(&tl, Some(&known));
+        let mut issues = timeline::validate(&tl, Some(&known));
+        // Scene clips must point at a scene folder in this project.
+        for (id, c) in &tl.clips {
+            if let Some(name) = &c.scene {
+                if !crate::scenes::exists(&self.root, name) {
+                    issues.push(timeline::Issue {
+                        level: timeline::Level::Error,
+                        msg: format!("clip {id}: unknown scene {name:?} (create it with `kurn scene new {name}`)"),
+                    });
+                }
+            }
+        }
         if timeline::has_errors(&issues) {
             return Err(ValidationError(
                 issues

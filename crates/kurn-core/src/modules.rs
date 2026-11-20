@@ -95,7 +95,7 @@ pub fn module_dirs(home: &Path, project: Option<&Path>) -> Vec<PathBuf> {
         let mut d = exe.parent().map(Path::to_path_buf);
         while let Some(dir) = d {
             let cand = dir.join("modules");
-            if cand.join("render.revideo").join("module.toml").exists() {
+            if cand.join("render.compositor").join("module.toml").exists() {
                 dirs.push(cand);
                 break;
             }

@@ -24,6 +24,10 @@ export interface Clip {
   track: string;
   asset?: string | null;
   component?: string | null;
+  /** HTML scene in the project's scenes/<name>/ (docs/v2-plan.md §3.1). */
+  scene?: string | null;
+  /** Scene parameters (posted to the scene; also CSS variables). */
+  params?: Record<string, unknown>;
   start: number;
   in: number;
   out: number;
@@ -134,7 +138,9 @@ export function validateTimeline(tl: Timeline, knownAssets?: Set<string>): Issue
     if (c.out <= c.in) err(`clip ${id}: out must be > in`);
     if (c.start < 0) err(`clip ${id}: start < 0`);
     if (!trackIds.has(c.track)) err(`clip ${id}: unknown track ${c.track}`);
-    if (!c.asset && !c.component) err(`clip ${id}: needs asset or component`);
+    const sources = [c.asset, c.component, c.scene].filter(Boolean).length;
+    if (sources === 0) err(`clip ${id}: needs an asset, component or scene`);
+    if (sources > 1) err(`clip ${id}: has more than one of asset/component/scene`);
     if (c.asset && knownAssets && !knownAssets.has(c.asset)) err(`clip ${id}: unknown asset ${c.asset}`);
     if (clipEnd(c) > tl.duration) warn(`clip ${id}: extends past timeline duration`);
     if (!byTrack.has(c.track)) byTrack.set(c.track, []);
@@ -149,8 +155,8 @@ export function validateTimeline(tl: Timeline, knownAssets?: Set<string>): Issue
     }
   }
 
-  if (tl.transitions && Object.keys(tl.transitions).length > 0) {
-    warn('transitions are not rendered yet (Phase 0); they are ignored');
+  for (const [id, t] of Object.entries(tl.transitions ?? {})) {
+    if (!['crossfade', 'dip', 'wipe', 'slide'].includes(t.type)) warn(`transition ${id}: unknown type ${t.type} (crossfade, dip, wipe, slide); rendered as crossfade`);
   }
   return issues;
 }
@@ -186,6 +192,7 @@ export function timelineFromDocJSON(root: J): Timeline | null {
       track: str(c.track) ?? '',
       asset: str(c.asset) ?? null,
       component: str(c.component) ?? null,
+      ...(str(c.scene) ? { scene: str(c.scene), params: (c.params ?? {}) as Record<string, unknown> } : {}),
       start: num(c.start), in: num(c.in), out: num(c.out),
       props: (c.props ?? {}) as Record<string, unknown>,
       keyframes,

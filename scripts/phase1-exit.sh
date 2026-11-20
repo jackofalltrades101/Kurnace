@@ -78,7 +78,7 @@ say "final render"
 say "verify"
 OUT="$WORK/slideshow/renders/final.mp4"
 DUR=$("$KURN" timeline show --json | j "d['timeline']['duration']")
-FRAMES=$(ffprobe -v error -count_frames -select_streams v -show_entries stream=nb_read_frames -of csv=p=0 "$OUT")
+FRAMES=$(ffprobe -v error -count_frames -select_streams v -show_entries stream=nb_read_frames -of csv=p=0 "$OUT" | cut -d, -f1)
 LUFS=$(ffmpeg -hide_banner -nostats -i "$OUT" -af ebur128 -f null - 2>&1 | sed -n 's/^ *I: *\(-[0-9.]*\) LUFS/\1/p' | tail -1)
 echo "timeline: $DUR frames · video: $FRAMES frames · integrated loudness: $LUFS LUFS"
 [ "$FRAMES" = "$DUR" ] || { echo "FAIL: frame count"; exit 1; }

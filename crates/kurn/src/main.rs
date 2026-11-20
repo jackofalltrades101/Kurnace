@@ -43,6 +43,9 @@ enum Cmd {
     Project(ProjectCmd),
     /// Regenerate AGENTS.md for the project.
     AgentsMd,
+    /// HTML scenes in the project's scenes/ folder (live, code-driven clips).
+    #[command(subcommand)]
+    Scene(SceneCmd),
     /// Timeline.
     #[command(subcommand)]
     Timeline(TimelineCmd),
@@ -148,6 +151,18 @@ enum ProjectCmd {
     Show,
     /// List projects in the default projects directory plus recents.
     List,
+}
+
+#[derive(Subcommand)]
+enum SceneCmd {
+    /// List the project's scenes and their params.
+    List,
+    /// Create scenes/<name>/ from a template (html: CSS-animated page, canvas: kurnace.scene render loop).
+    New {
+        name: String,
+        #[arg(long, default_value = "html")]
+        template: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -810,6 +825,8 @@ fn run() -> Result<i32> {
         Cmd::Project(ProjectCmd::List) => ("project.list", json!({})),
         Cmd::AgentsMd => ("agents.md", json!({ "project": proj()? })),
         Cmd::Timeline(TimelineCmd::Show) => ("timeline.show", json!({ "project": proj()? })),
+        Cmd::Scene(SceneCmd::List) => ("scenes.list", json!({ "project": proj()? })),
+        Cmd::Scene(SceneCmd::New { name, template }) => ("scene.new", json!({ "project": proj()?, "name": name, "template": template })),
         Cmd::Board(b) => match b {
             BoardCmd::Add { elements, file } => {
                 let txt = match (elements, file) {

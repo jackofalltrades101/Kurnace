@@ -397,6 +397,116 @@ fn parse_range(h: &str, len: u64) -> Option<(u64, u64)> {
     (start <= end && start < len).then_some((start, end))
 }
 
+/// The project whose scenes/ the preview may load (set by the UI when a project opens).
+static CURRENT_PROJECT: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+#[tauri::command]
+fn asset_set_project(project: String) {
+    *CURRENT_PROJECT.lock().unwrap() = std::fs::canonicalize(project).ok();
+}
+
+fn mime_for(path: &std::path::Path) -> &'static str {
+    match path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase().as_str() {
+        "html" | "htm" => "text/html; charset=utf-8",
+        "js" | "mjs" => "text/javascript",
+        "css" => "text/css",
+        "json" => "application/json",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "svg" => "image/svg+xml",
+        "mp4" | "m4v" => "video/mp4",
+        "mov" => "video/quicktime",
+        "webm" => "video/webm",
+        "wav" => "audio/wav",
+        "mp3" => "audio/mpeg",
+        "m4a" | "aac" => "audio/aac",
+        "ogg" | "opus" => "audio/ogg",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
+        "glb" => "model/gltf-binary",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Send a file, honouring a Range header.
+fn send_path(conn: &mut std::net::TcpStream, method: &str, range: Option<&str>, path: &std::path::Path, mime: &str, cors: &str) -> std::io::Result<()> {
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return write!(conn, "HTTP/1.1 404 Not Found\r\n{cors}Content-Length: 0\r\n\r\n");
+    };
+    let len = f.metadata()?.len();
+    let (status, start, end) = match range.map(|r| parse_range(r, len)) {
+        Some(Some((s, e))) => ("206 Partial Content", s, e),
+        Some(None) => {
+            return write!(conn, "HTTP/1.1 416 Range Not Satisfiable\r\n{cors}Content-Range: bytes */{len}\r\nContent-Length: 0\r\n\r\n");
+        }
+        None => ("200 OK", 0, len.saturating_sub(1)),
+    };
+    let n = if len == 0 { 0 } else { end - start + 1 };
+    let mut head = format!("HTTP/1.1 {status}\r\n{cors}Content-Type: {mime}\r\nContent-Length: {n}\r\nCache-Control: no-store\r\n");
+    if status.starts_with("206") {
+        head.push_str(&format!("Content-Range: bytes {start}-{end}/{len}\r\n"));
+    }
+    head.push_str("\r\n");
+    conn.write_all(head.as_bytes())?;
+    if method != "HEAD" && n > 0 {
+        f.seek(SeekFrom::Start(start))?;
+        std::io::copy(&mut f.take(n), conn)?;
+    }
+    conn.flush()
+}
+
+/// packages/compositor (scene runtime) — $KURN_COMPOSITOR_DIR, bundled resources, or the dev tree.
+fn compositor_dir() -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os("KURN_COMPOSITOR_DIR") {
+        return Some(PathBuf::from(p));
+    }
+    let exe = std::env::current_exe().ok()?;
+    let mut d = exe.parent().map(PathBuf::from);
+    while let Some(dir) = d {
+        for cand in [dir.join("compositor"), dir.join("Resources/compositor"), dir.join("packages/compositor")] {
+            if cand.join("scene-runtime.js").is_file() {
+                return Some(cand);
+            }
+        }
+        d = dir.parent().map(PathBuf::from);
+    }
+    None
+}
+
+/// Exact video frame at `secs` (JPEG), decoded once by ffmpeg and cached.
+fn preview_frame(src: &std::path::Path, id: &str, secs: f64) -> Option<PathBuf> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    let dir = PathBuf::from(home).join(".kurnace/cache/preview-frames").join(id);
+    let file = dir.join(format!("{:.6}.jpg", secs));
+    if file.is_file() {
+        return Some(file);
+    }
+    std::fs::create_dir_all(&dir).ok()?;
+    let tmp = dir.join(format!("{:.6}.{}.tmp.jpg", secs, std::process::id()));
+    let ok = std::process::Command::new("ffmpeg")
+        .args(["-v", "error", "-y", "-ss", &format!("{secs:.6}"), "-i"])
+        .arg(src)
+        .args(["-frames:v", "1", "-q:v", "3"])
+        .arg(&tmp)
+        .status()
+        .is_ok_and(|s| s.success());
+    if !ok || !tmp.is_file() {
+        // Past the end of the source: hold the last frame.
+        let _ = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-y", "-sseof", "-0.1", "-i"])
+            .arg(src)
+            .args(["-frames:v", "1", "-q:v", "3"])
+            .arg(&tmp)
+            .status();
+    }
+    std::fs::rename(&tmp, &file).ok()?;
+    Some(file)
+}
+
 fn handle_asset_conn(
     mut conn: std::net::TcpStream,
     token: &str,
@@ -470,6 +580,63 @@ fn handle_asset_conn(
                 }
                 return conn.flush();
             }
+            "frame" => {
+                // /frame/<id>/<seconds> — exact video frame for the paused preview.
+                let Some((fid, secs)) = tail.split_once('/') else {
+                    return fail(&mut conn, "404 Not Found");
+                };
+                let (Ok((src, _)), Ok(secs)) = (resolve_asset(cache, fid), secs.parse::<f64>()) else {
+                    return fail(&mut conn, "404 Not Found");
+                };
+                let Some(file) = preview_frame(&src, fid, secs.max(0.0)) else {
+                    return fail(&mut conn, "404 Not Found");
+                };
+                return send_path(&mut conn, method, None, &file, "image/jpeg", cors);
+            }
+            "scene" => {
+                // /scene/<name>/<path> — files of the open project's scenes/<name>/.
+                let Some(root) = CURRENT_PROJECT.lock().unwrap().clone() else {
+                    return fail(&mut conn, "404 Not Found");
+                };
+                let tail = tail.split('?').next().unwrap_or("");
+                let (name, rel) = tail.split_once('/').unwrap_or((tail, ""));
+                let dir = root.join("scenes").join(name);
+                let Ok(dir) = dir.canonicalize() else { return fail(&mut conn, "404 Not Found") };
+                let rel = if rel.is_empty() {
+                    std::fs::read_to_string(dir.join("scene.toml")).ok()
+                        .and_then(|t| t.lines().find_map(|l| l.trim().strip_prefix("entry").map(|v| v.trim_start_matches([' ', '=']).trim().trim_matches('"').to_string())))
+                        .unwrap_or_else(|| "index.html".into())
+                } else {
+                    rel.to_string()
+                };
+                let Ok(file) = dir.join(&rel).canonicalize() else { return fail(&mut conn, "404 Not Found") };
+                if !file.starts_with(&dir) || !file.starts_with(root.join("scenes")) {
+                    return fail(&mut conn, "403 Forbidden");
+                }
+                let mime = mime_for(&file);
+                if mime.starts_with("text/html") {
+                    // Inject the scene runtime before any scene script; relative URL so it
+                    // works behind the dev proxy and on the release server alike.
+                    let depth = 2 + rel.matches('/').count();
+                    let tag = format!("<script src=\"{}__kurnace/scene-runtime.js\"></script>", "../".repeat(depth));
+                    let html = std::fs::read_to_string(&file).unwrap_or_default();
+                    let lower = html.to_ascii_lowercase();
+                    let html = match lower.find("<head").and_then(|i| lower[i..].find('>').map(|j| i + j + 1)) {
+                        Some(at) => format!("{}{tag}{}", &html[..at], &html[at..]),
+                        None => format!("{tag}{html}"),
+                    };
+                    write!(conn, "HTTP/1.1 200 OK\r\n{cors}Content-Type: {mime}\r\nContent-Length: {}\r\nCache-Control: no-store\r\n\r\n", html.len())?;
+                    if method != "HEAD" {
+                        conn.write_all(html.as_bytes())?;
+                    }
+                    return conn.flush();
+                }
+                return send_path(&mut conn, method, range.as_deref(), &file, mime, cors);
+            }
+            "__kurnace" => {
+                let Some(dir) = compositor_dir() else { return fail(&mut conn, "404 Not Found") };
+                return send_path(&mut conn, method, None, &dir.join("scene-runtime.js"), "text/javascript", cors);
+            }
             "seq" => {
                 let Some((sid, frame)) = tail.split_once('/') else {
                     return fail(&mut conn, "404 Not Found");
@@ -480,10 +647,14 @@ fn handle_asset_conn(
                 let Ok(v) = call("lib.get", json!({ "id": sid }), |_| {}) else {
                     return fail(&mut conn, "404 Not Found");
                 };
-                let listed = v["frames"]
-                    .as_array()
-                    .is_some_and(|a| a.iter().any(|x| x.as_str() == Some(frame)));
-                let (Some(dir), true) = (v["path"].as_str(), listed) else {
+                let frames: Vec<&str> = v["frames"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+                // By file name, or by index (the compositor asks /seq/<id>/<n>).
+                let name = if frames.contains(&frame) {
+                    Some(frame.to_string())
+                } else {
+                    frame.parse::<usize>().ok().and_then(|i| frames.get(i.min(frames.len().saturating_sub(1))).map(|f| f.to_string()))
+                };
+                let (Some(dir), Some(frame)) = (v["path"].as_str(), name) else {
                     return fail(&mut conn, "404 Not Found");
                 };
                 let path = PathBuf::from(dir).join(frame);
@@ -746,6 +917,7 @@ fn main() {
             core_call,
             doc_subscribe,
             asset_base,
+            asset_set_project,
             initial_project,
             remember_project,
             save_png,

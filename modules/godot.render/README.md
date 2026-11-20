@@ -32,7 +32,7 @@ Inputs:
 Outputs one `frames` directory asset (`kind = seq`) containing
 `frame00000000.png…` and a deterministic `kurn.json` with `fps_num/fps_den`,
 `frames`, `width`, `height`, `engine: godot`, `language: csharp`. The library
-records that rate and duration, and `render.revideo` plays the sequence on the
+records that rate and duration, and `render.compositor` plays the sequence on the
 timeline.
 
 ## C# model

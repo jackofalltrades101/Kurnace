@@ -5,6 +5,7 @@ pub mod library;
 pub mod modules;
 pub mod ops;
 pub mod project;
+pub mod scenes;
 pub mod store;
 pub mod timeline;
 pub mod transport;

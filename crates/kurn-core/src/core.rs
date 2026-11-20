@@ -487,6 +487,26 @@ pub fn handle(
             json!({ "path": root.join("AGENTS.md"), "claude": root.join("CLAUDE.md") })
         }
 
+        "scenes.list" => {
+            let st = c.project(s(p, "project")?)?;
+            json!(crate::scenes::list(&st.project.root)?.iter().map(crate::scenes::to_json).collect::<Vec<_>>())
+        }
+
+        "scene.new" => {
+            let st = c.project(s(p, "project")?)?;
+            let tl = st.project.timeline()?;
+            let info = crate::scenes::create(
+                &st.project.root,
+                s(p, "name")?,
+                p.get("template").and_then(Value::as_str).unwrap_or("html"),
+                tl.width,
+                tl.height,
+            )?;
+            let mut out = crate::scenes::to_json(&info);
+            out["dir"] = json!(info.dir);
+            out
+        }
+
         "timeline.show" => {
             let st = c.project(s(p, "project")?)?;
             let tl = st.project.timeline()?;
@@ -1148,14 +1168,14 @@ fn prepare_render(c: &mut Core, p: &Value) -> Result<std::result::Result<Job, Va
         &c.module_dirs(Some(&root)),
         p.get("module")
             .and_then(Value::as_str)
-            .unwrap_or("render.revideo"),
+            .unwrap_or("render.compositor"),
     )?;
     let mode = p.get("mode").and_then(Value::as_str).unwrap_or("final");
     let out = s(p, "out")?;
     if let Some(dir) = Path::new(out).parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let mut req = json!({ "timeline": tl, "assets": assets, "mode": mode, "out": out });
+    let mut req = json!({ "timeline": tl, "assets": assets, "mode": mode, "out": out, "project_root": root });
     for k in ["frame", "range", "scale", "background"] {
         if let Some(v) = p.get(k).filter(|v| !v.is_null()) {
             req[k] = v.clone();
@@ -1227,6 +1247,17 @@ pub fn write_agents_md(root: &Path, module_dirs: &[PathBuf]) -> Result<()> {
          - Publish your cursor so the human sees where you are: `kurn presence set --playhead <frame> --select c_1,c_2` (repeat or `kurn presence clear` when done).\n\
          - API modules are budgeted by `[agents].api_budget_usd`; check `kurn budget` and never bypass with `KURN_BUDGET_OVERRIDE` unless a human asked.\n\
          - Package a finished render with `kurn run export.mp4 --input renders/final.mp4 --preset youtube --out renders/youtube.mp4`.\n\n\
+         ## Scenes — build visuals here, not in private scripts\n\
+         Anything code-driven (motion graphics, titles, canvas animation, data viz, procedural shots) is a **scene**: a folder `scenes/<name>/` with an HTML page. Kurnace previews it live in the app (it hot-reloads when you save), renders it frame-exactly in headless Chromium, and lets the timeline trim, layer and keyframe it. Don't build your own frame renderer, puppeteer script or bake-and-reimport loop.\n\n\
+         ```\nkurn scene new title-card                  # html template: CSS-animated page + scene.toml\nkurn scene new particles --template canvas # canvas template: kurnace.scene render loop\nkurn scene list\nkurn op clip.add --args '{\"track\":\"v1\",\"scene\":\"title-card\",\"start\":0,\"dur\":90,\"params\":{\"title\":\"Hello\"}}'\nkurn op clip.set --args '{\"clip\":\"c_1\",\"params\":{\"title\":\"Hi\"}}'\n```\n\n\
+         The contract (the runtime is injected automatically; no imports):\n\
+         - **CSS animations / transitions / Web Animations just work.** They're paused and set to the frame's time. A plain HTML page with `@keyframes` is a valid scene.\n\
+         - **JS:** `kurnace.scene({ render(frame, ctx) { … } })`. `render` must be a pure function of `(frame, ctx.params)`; it may be async. `ctx` = `{ frame, time, fps, params, width, height, random(salt) }`.\n\
+         - **Legacy:** `window.META = { duration, fps }` + `window.renderFrame(frame)` also works.\n\
+         - `requestAnimationFrame`, `performance.now()` and `Date.now()` run on scene time; `Math.random()` is seeded per frame. Never keep state between frames, fetch the network, or use timers to decide what's drawn.\n\
+         - **Params:** declare them in `scene.toml` `[params]` (name = { type, default }); they arrive in `ctx.params` and as CSS variables (`var(--title)`).\n\
+         - The page is sized to the timeline (e.g. 1920×1080) unless `scene.toml` sets `width`/`height`. Clip `in` offsets into scene time: frame 0 of the scene is the clip's `in`.\n\
+         - A thrown error shows in the app's preview and fails the render with your message. Check with `kurn render still --frame N`.\n\n\
          ## Rendering\n\
          ```\nkurn render still --frame 240          # → renders/f240.png\nkurn render draft --range 0-300 --scale 0.5\nkurn render final\n```\n\n\
          ## Ops (`kurn op <type> --args '<json>'`)\n",
@@ -1323,6 +1354,7 @@ fn subscribe_stream(
             Push::Op(rec) => json!({ "type": "op", "record": rec }),
             Push::Presence(presence) => json!({ "type": "presence", "presence": presence }),
             Push::Pending(pending) => json!({ "type": "pending", "pending": pending }),
+            Push::Scene { name } => json!({ "type": "scene", "name": name }),
         };
         if writeln!(w, "{}", json!({ "id": id, "event": ev })).is_err() {
             break; // client gone; the sender is dropped on next fan-out

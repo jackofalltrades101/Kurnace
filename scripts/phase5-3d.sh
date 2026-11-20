@@ -66,7 +66,7 @@ for p in sys.argv[1:]:
     print(f"  PNG {p.rsplit('/',1)[-1]} ok")
 PY
 "$KURN" render final --out "$WORK/p/renders/3d.mp4" --json >/dev/null
-FRAMES=$(ffprobe -v error -count_frames -select_streams v -show_entries stream=nb_read_frames -of csv=p=0 "$WORK/p/renders/3d.mp4")
+FRAMES=$(ffprobe -v error -count_frames -select_streams v -show_entries stream=nb_read_frames -of csv=p=0 "$WORK/p/renders/3d.mp4" | cut -d, -f1)
 python3 - "$FRAMES" <<'PY'
 import sys
 n=int(sys.argv[1].strip())

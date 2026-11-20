@@ -21,7 +21,14 @@ function meta(a: Asset) {
   return bits.join(' · ');
 }
 
-export function Library({ refreshKey }: { refreshKey: number }) {
+interface SceneInfo { name: string; description?: string | null; params?: Record<string, unknown>; duration?: number | null }
+
+export function Library({ refreshKey, project, sceneRev }: { refreshKey: number; project?: string; sceneRev?: Record<string, number> }) {
+  const [scenes, setScenes] = useState<SceneInfo[]>([]);
+  useEffect(() => {
+    if (!project) return;
+    call<SceneInfo[]>('scenes.list', { project }).then(setScenes).catch(() => setScenes([]));
+  }, [project, sceneRev, refreshKey]);
   const [q, setQ] = useState('');
   const [kind, setKind] = useState<(typeof KINDS)[number]>('all');
   const [semantic, setSemantic] = useState(false);
@@ -47,7 +54,14 @@ export function Library({ refreshKey }: { refreshKey: number }) {
         setDropping(false);
         setBusy(`importing ${e.payload.paths.length} file(s)…`);
         try {
-          await call('lib.add', { paths: e.payload.paths, tags: [] });
+          const added = await call<{ id: string }[]>('lib.add', { paths: e.payload.paths, tags: [] });
+          // Dropped onto the timeline? Ask it to place the new assets where they landed.
+          const dpr = window.devicePixelRatio || 1;
+          const x = e.payload.position.x / dpr, y = e.payload.position.y / dpr;
+          const tlRect = document.querySelector('.tl-wrap')?.getBoundingClientRect();
+          if (tlRect && x >= tlRect.left && x <= tlRect.right && y >= tlRect.top && y <= tlRect.bottom) {
+            window.dispatchEvent(new CustomEvent('kurn-place-assets', { detail: { ids: added.map(a => a.id), clientX: x, clientY: y } }));
+          }
           setBusy(null);
           setBump(b => b + 1);
         } catch (err) {
@@ -76,10 +90,25 @@ export function Library({ refreshKey }: { refreshKey: number }) {
         </div>
       </div>
       {busy && <div className="note">{busy}</div>}
+      {scenes.length > 0 && kind === 'all' && !q && (
+        <div className="lib-scenes">
+          <div className="lib-sub">Scenes <span className="muted">· drag onto the timeline</span></div>
+          <ul>
+            {scenes.map(sc => (
+              <li key={sc.name} draggable title={sc.description || `scenes/${sc.name}`}
+                  onDragStart={e => { e.dataTransfer.setData('application/x-kurn-scene', sc.name); e.dataTransfer.effectAllowed = 'copy'; }}>
+                <span className="glyph" aria-hidden>◫</span>
+                <span className="name">{sc.name}</span>
+                {sc.params && Object.keys(sc.params).length > 0 && <span className="muted">{Object.keys(sc.params).length} params</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <ul className="assets">
         {items.map(a => (
           <li key={a.id} title={`${a.id}\n${a.tags.join(', ')}`}
-              draggable onDragStart={e => e.dataTransfer.setData('text/plain', a.id)}>
+              draggable onDragStart={e => { e.dataTransfer.setData('application/x-kurn-asset', a.id); e.dataTransfer.setData('text/plain', a.id); e.dataTransfer.effectAllowed = 'copy'; }}>
             <div className="thumb"><Thumb a={a} /></div>
             <div className="name">{a.name ?? a.id}</div>
             <div className="meta muted">{meta(a)}</div>

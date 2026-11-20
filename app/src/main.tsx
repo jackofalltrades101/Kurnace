@@ -3,18 +3,20 @@
 //   Library │ Preview │ Agents + Activity
 //   Timeline
 //   Status
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Agents } from './Agents';
 import { Board } from './Board';
 import { Dashboard } from './Dashboard';
-import { call, initAssets, initialProject, log, onMenu, rememberProject, savePng } from './kurn';
+import { call, initAssets, initialProject, log, onMenu, rememberProject, savePng, setAssetProject } from './kurn';
+import { Inspector } from './Inspector';
 import { Library } from './Library';
 import { Activity, PendingDialog, StatusBar } from './Panels';
 import { Preview, useAssets, type PreviewHandle } from './Preview';
 import { RenderBar } from './RenderBar';
 import { Settings } from './Settings';
 import { Timeline } from './Timeline';
+import { useOptimistic } from './optimistic';
 import { useProject } from './useProject';
 import './styles.css';
 
@@ -60,11 +62,24 @@ function ProjectPicker({ onOpen }: { onOpen: (p: string) => void }) {
 
 function Workspace({ project, onProjects, onSettings }: { project: string; onProjects: () => void; onSettings: () => void }) {
   const p = useProject(project);
+  useEffect(() => { setAssetProject(project).catch(() => {}); }, [project]);
   const [time, setTime] = useState(0);
   const [view, setView] = useState<'preview' | 'board'>('preview');
   const [filter, setFilter] = useState('all');
   const preview = useRef<PreviewHandle | null>(null);
-  const tl = p.timeline;
+  // Test and agent-debug hook: drive the preview from devtools or the UI harness.
+  useEffect(() => { (window as unknown as { __kurnPreview?: unknown }).__kurnPreview = preview; }, []);
+  // Errors from edits (rejected ops, pending approvals) as a short-lived toast.
+  const [toast, setToast] = useState<string | null>(null);
+  useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 6000); return () => clearTimeout(t); }, [toast]);
+  const onOpError = useCallback((m: string) => setToast(m), []);
+  // Everything renders the optimistic view: core state + edits still in flight.
+  const opt = useOptimistic(project, p.timeline, onOpError);
+  const [selection, setSelection] = useState<string[]>([]);
+  const onSelectionChange = useCallback((ids: string[]) => setSelection(prev => (prev.join() === ids.join() ? prev : ids)), []);
+  const tl = opt.view;
+  // Test hook: what the UI is showing right now (optimistic view).
+  (window as unknown as { __kurnView?: unknown }).__kurnView = tl;
   const assets = useAssets(tl);
   const fps = tl ? tl.fps.num / tl.fps.den : 30;
   const frame = Math.round(time * fps);
@@ -98,13 +113,27 @@ function Workspace({ project, onProjects, onSettings }: { project: string; onPro
     if (!params.has('selftest') || !tl) return;
     const lc = p.lastChange;
     log(`TIMELINE rev=${p.rev} clips=${Object.keys(tl.clips).length} origin=${lc?.origin ?? '-'} changed=${lc?.clips.join(',') ?? ''}`);
+    // Report what the preview actually drew (WebKit end-to-end check).
+    const probe = Number(params.get('probe') ?? NaN);
+    if (Number.isFinite(probe)) {
+      (async () => {
+        await preview.current?.seekAndSettle(probe);
+        await sleep(800);
+        const vis = [...document.querySelectorAll<HTMLElement>('.kc-layer')].filter(l => l.style.display !== 'none');
+        const imgs = vis.flatMap(l => [...l.querySelectorAll('img')]).filter(i => i.style.display !== 'none');
+        const decoded = imgs.filter(i => i.complete && i.naturalWidth > 0).length;
+        const frames = vis.filter(l => l.querySelector('iframe')).length;
+        const errs = document.querySelector('.scene-errors')?.textContent ?? '';
+        log(`PREVIEW frame=${probe} visible=${vis.length} images=${decoded}/${imgs.length} scenes=${frames} errors=${errs ? JSON.stringify(errs) : 'none'}`);
+      })();
+    }
     const f = Number(params.get('capture') ?? NaN);
     if (lc?.origin?.startsWith('agent:') && Number.isFinite(f)) capture(f, 'live');
   }, [p.rev]);
 
   return (
     <div className="app">
-      <Library refreshKey={p.ops.length} />
+      <Library refreshKey={p.ops.length} project={project} sceneRev={p.sceneRev} />
       <main className="center">
         <div className="center-tabs" role="tablist" aria-label="View">
           <button className="projects-tab" onClick={onProjects} title="Back to projects">← Projects</button>
@@ -117,7 +146,7 @@ function Workspace({ project, onProjects, onSettings }: { project: string; onPro
           {tl ? (
             <>
               <RenderBar project={project} tl={tl} frame={frame} />
-              <Preview timeline={tl} assets={assets} onTime={setTime} handle={preview} />
+              <Preview timeline={tl} assets={assets} onTime={setTime} handle={preview} sceneRev={p.sceneRev} />
             </>
           ) : (
             <div className="empty">{p.status === 'error' ? `Couldn't load project: ${p.error}` : 'Connecting to core…'}</div>
@@ -132,15 +161,19 @@ function Workspace({ project, onProjects, onSettings }: { project: string; onPro
         </div>
       </main>
       <aside className="right">
+        {tl && selection.length === 1 && tl.clips[selection[0]] && (
+          <Inspector project={project} tl={tl} clipId={selection[0]} frame={frame} assets={assets} run={opt.run} onSeek={seek} />
+        )}
         <Agents project={project} />
         <Activity ops={p.ops} filter={filter} setFilter={setFilter} />
       </aside>
       {tl && (
         <Timeline project={project} tl={tl} frame={frame} assets={assets} presence={p.presence} lastChange={p.lastChange}
-          onSeek={seek} onSeekEnd={f => preview.current?.seek(f / fps)} />
+          onSeek={seek} onSeekEnd={f => preview.current?.seek(f / fps)} run={opt.run} onSelectionChange={onSelectionChange} />
       )}
       <StatusBar project={project} status={p.status} pending={p.pending} />
       <PendingDialog project={project} pending={p.pending} onDecided={p.refreshPending} />
+      {toast && <div className="toast" role="alert" onClick={() => setToast(null)}>{toast}</div>}
     </div>
   );
 }

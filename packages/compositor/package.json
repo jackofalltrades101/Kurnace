@@ -1,0 +1,20 @@
+{
+  "name": "@kurnace/compositor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/compositor.ts",
+    "./scene-runtime.js": "./scene-runtime.js"
+  },
+  "scripts": {
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@kurnace/timeline": "workspace:*"
+  },
+  "devDependencies": {
+    "vite": "8.3.6"
+  }
+}

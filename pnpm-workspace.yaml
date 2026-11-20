@@ -6,4 +6,3 @@ onlyBuiltDependencies:
   - puppeteer
   - "@ffmpeg-installer/darwin-arm64"
   - "@ffprobe-installer/darwin-arm64"
-# @revideo/telemetry postinstall intentionally NOT allowed (spec §10.3)

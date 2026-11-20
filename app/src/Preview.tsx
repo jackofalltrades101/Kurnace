@@ -1,92 +1,15 @@
 /** @jsxImportSource react */
-// Preview panel: the Revideo Player driven by the live timeline (spec §15).
-// Agents never judge from here — headless `kurn render still` is the source of truth (§10.4).
+// Preview panel: the Kurnace compositor, live (docs/v2-plan.md §3.1).
+// The same compositor renders finals in headless Chromium, so this is what renders.
+// Scrubbing shows fast approximate frames; when the playhead stops, every layer
+// settles on the exact frame. Scene files hot-reload when they change on disk.
+import { type AssetRef, Compositor } from '@kurnace/compositor';
 import type { Timeline } from '@kurnace/timeline';
-import { Vector2 } from '@revideo/core';
-import { Player } from '@revideo/player-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import baseProject from '../../modules/render.revideo/src/project.ts';
-import { type Asset, assetUrl, call, seqBase } from './kurn';
-
-// @revideo/player-react 0.11 renders <revideo-player> with props like `variables`
-// and `width`, but the element only defines getters for them (it reads its
-// attributes). React 19 assigns custom-element props as properties, so every
-// update after mount throws "Attempted to assign to readonly property" and the
-// preview never updates. Add setters that write the observed attributes.
-//
-// `playing` and `looping` are plain instance fields instead: React writes the
-// strings "false"/"true" into them, "false" is truthy, so the player autoplayed,
-// and later writes (the Play button) never reached the element. Turn them into
-// per-instance accessors that route React's strings through the element's own
-// methods, while the element's internal boolean writes still just store.
-function installBoolProp(el: any, key: string, apply: (el: any, v: boolean) => void) {
-  const d = Object.getOwnPropertyDescriptor(el, key);
-  if (d && 'get' in d) return;
-  let value = d ? d.value === true || d.value === 'true' : false;
-  Object.defineProperty(el, key, {
-    configurable: true,
-    get: () => value,
-    set: (v: unknown) => {
-      if (typeof v === 'boolean') { value = v; return; } // the element's own writes
-      value = v === 'true';                               // React prop writes
-      apply(el, value);
-    },
-  });
-}
-
-/** Patch one element instance (its class fields shadow prototype accessors). */
-function patchPlayerElement(el: any) {
-  installBoolProp(el, 'playing', (e, v) => e.setPlaying(v));
-  installBoolProp(el, 'looping', (e, v) => e.player?.toggleLoop(v));
-}
-
-function patchRevideoPlayerElement() {
-  const El = customElements.get('revideo-player');
-  if (!El) return void customElements.whenDefined('revideo-player').then(patchRevideoPlayerElement);
-  const connected = El.prototype.connectedCallback;
-  El.prototype.connectedCallback = function (this: any) {
-    patchPlayerElement(this);
-    return connected?.call(this);
-  };
-  for (const key of ['fps', 'quality', 'width', 'height', 'variables']) {
-    const d = Object.getOwnPropertyDescriptor(El.prototype, key);
-    if (d?.get && !d.set) {
-      Object.defineProperty(El.prototype, key, {
-        ...d,
-        set(this: HTMLElement, v: unknown) {
-          if (v == null) this.removeAttribute(key);
-          else this.setAttribute(key, typeof v === 'string' ? v : JSON.stringify(v));
-        },
-      });
-    }
-  }
-  // The first <revideo-player> is upgraded while `customElements.define`
-  // runs inside the dynamic import; its connectedCallback therefore ran
-  // before we patched the prototype. Patch every instance that already exists.
-  document.querySelectorAll('revideo-player').forEach(patchPlayerElement);
-}
-patchRevideoPlayerElement();
-
-// Revideo's preview creates <video>/<audio> elements it never attaches to the
-// document, and waits on their `seeked` events to draw a frame. WebKit (WKWebView)
-// throttles detached media, so `seeked` sometimes never fires and the preview
-// freezes after a seek. Park new media elements in a hidden in-document holder.
-(function attachDetachedMedia() {
-  const holder = document.createElement('div');
-  holder.setAttribute('aria-hidden', 'true');
-  holder.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none;';
-  const create = document.createElement.bind(document);
-  document.createElement = ((tag: string, opts?: ElementCreationOptions) => {
-    const el = create(tag, opts);
-    if (/^(video|audio)$/i.test(tag)) {
-      queueMicrotask(() => { if (!el.isConnected) (document.body ?? document.documentElement).appendChild(holder).appendChild(el); });
-    }
-    return el;
-  }) as typeof document.createElement;
-})();
+import { type Asset, assetBaseUrl, assetUrl, call, seqBase } from './kurn';
 
 export interface ResolvedAsset {
-  url: string; kind: string; name?: string; width?: number; height?: number; duration_s?: number;
+  url: string; kind: string; ext?: string | null; name?: string; width?: number; height?: number; duration_s?: number;
   frames?: string[]; fps_num?: number | null; fps_den?: number | null;
 }
 
@@ -100,6 +23,7 @@ function resolve(id: string): Promise<ResolvedAsset | null> {
         return {
           url: seq ? seqBase(a.id) : assetUrl(a.id, a.ext),
           kind: a.kind,
+          ext: a.ext,
           name: a.name,
           width: a.width ?? undefined,
           height: a.height ?? undefined,
@@ -127,149 +51,157 @@ export function useAssets(tl: Timeline | null) {
   return assets;
 }
 
-/** The shared Revideo project is built with default size/fps; adapt it to this timeline. */
-function projectFor(tl: Timeline) {
-  const s = baseProject.settings;
-  const fps = tl.fps.num / tl.fps.den;
-  return {
-    ...baseProject,
-    settings: {
-      ...s,
-      shared: { ...s.shared, size: new Vector2(tl.width, tl.height) },
-      rendering: { ...s.rendering, fps },
-      preview: { ...s.preview, fps },
-    },
-  } as typeof baseProject;
-}
-
 export interface PreviewHandle {
+  /** The preview is DOM, not a canvas; kept for callers that probe for one. */
   canvas(): HTMLCanvasElement | null;
-  /** Frame-exact seek. (The Player's `currentTime` prop ignores changes under 0.05 s.) */
+  /** Seek; the frame settles exactly once the playhead stops. */
   seek(seconds: number): void;
-  /** Seek without waiting for a settled frame (used while scrubbing). */
+  /** Show a frame immediately without waiting for exact media (scrubbing). */
   seekFast(seconds: number): void;
-  /** Seek and resolve once the Player is showing exactly `frame` (false on timeout). */
+  /** Seek and resolve once every layer shows exactly `frame`. */
   seekAndSettle(frame: number, timeoutMs?: number): Promise<boolean>;
 }
 
-const nextFrame = () => new Promise<void>(r => requestAnimationFrame(() => r()));
+const toRefs = (assets: Record<string, ResolvedAsset>): Record<string, AssetRef> =>
+  Object.fromEntries(Object.entries(assets).map(([id, a]) => [id, {
+    kind: a.kind, ext: a.ext, url: a.kind === 'seq' ? undefined : a.url,
+    width: a.width, height: a.height, fps: a.fps_num && a.fps_den ? a.fps_num / a.fps_den : null,
+  }]));
+
+const fmt = (frame: number, fps: number) => {
+  const t = frame / fps;
+  const m = Math.floor(t / 60), s = Math.floor(t % 60), f = Math.round(frame % fps);
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}:${String(f).padStart(2, '0')}`;
+};
 
 export function Preview(props: {
   timeline: Timeline;
   assets: Record<string, ResolvedAsset>;
   onTime: (t: number) => void;
   handle?: React.MutableRefObject<PreviewHandle | null>;
+  /** Bumped per scene name when its files change (hot reload). */
+  sceneRev?: Record<string, number>;
 }) {
   const { timeline: tl, assets } = props;
-  const host = useRef<HTMLDivElement>(null);
-  // Re-create the project only when the canvas geometry changes, not on every edit.
-  const project = useMemo(() => projectFor(tl), [tl.width, tl.height, tl.fps.num, tl.fps.den]);
-  const variables = useMemo(() => ({ timeline: tl, assets, background: '#000000' }), [tl, assets]);
-  const missing = Object.values(tl.clips).filter(c => c.asset && !assets[c.asset]).length;
-  // Mount the Player once the first batch of assets has resolved (later edits
-  // that add assets don't unmount it; the scene skips unresolved clips).
-  const [mounted, setMounted] = useState(false);
-  // WebKit can occasionally stall the preview after a seek (see attachDetachedMedia).
-  // Offer a one-click reload instead of a frozen frame.
-  const [stalled, setStalled] = useState(false);
-  const [playerKey, setPlayerKey] = useState(0);
-  useEffect(() => { if (missing === 0) setMounted(true); }, [missing]);
-  // Belt and braces: the custom element can upgrade in the same tick as the
-  // first React commit, before the module-level patch sees it.
-  useEffect(() => {
-    const el = host.current?.querySelector('revideo-player');
-    if (el) patchPlayerElement(el);
-  }, [mounted, playerKey]);
+  const fps = tl.fps.num / tl.fps.den;
+  const viewport = useRef<HTMLDivElement>(null);
+  const stageHost = useRef<HTMLDivElement>(null);
+  const comp = useRef<Compositor | null>(null);
+  const frameRef = useRef(0);
+  const settleToken = useRef(0);
+  const [frame, setFrame] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [scale, setScale] = useState(0.5);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const refs = useMemo(() => toRefs(assets), [assets]);
 
-  // Where the user (or a test) wants the playhead. The element reloads on every
-  // `variables` change — every edit, and when assets finish resolving — and the
-  // preview would jump back to frame 0, so re-seek after each reload.
-  const wantTime = useRef(0);
-  const seek = (t: number) => {
-    wantTime.current = t;
-    host.current?.querySelector('revideo-player')?.dispatchEvent(new CustomEvent('seekto', { detail: t }));
+  const report = (f: number) => {
+    frameRef.current = f;
+    setFrame(f);
+    props.onTime(f / fps);
   };
-  useEffect(() => {
-    const id = requestAnimationFrame(() => seek(wantTime.current));
-    return () => cancelAnimationFrame(id);
-  }, [variables]);
 
-  const playerEl = () => host.current?.querySelector('revideo-player') as (HTMLElement & { player?: { playback: { frame: number } } }) | null;
-  const seekAndSettle = async (frame: number, timeoutMs = 10_000) => {
-    const fps = tl.fps.num / tl.fps.den;
-    const t0 = performance.now();
-    let lastIssue = -Infinity;
-    // Wait for the player, (re)issue the seek until it sticks — a seek sent
-    // before the project loads, or across a reload, is silently dropped.
-    while (performance.now() - t0 < timeoutMs) {
-      const el = playerEl();
-      if (el?.player) {
-        if (el.player.playback.frame === frame) {
-          // The playhead being there isn't enough: the stage may still be waiting
-          // on media for this frame. Ask for a render and wait until it's drawn.
-          const p = el.player as unknown as { requestRender(): void; onRender: { subscribe(h: () => void): () => void } };
-          const drawn = await new Promise<boolean>(res => {
-            const timer = setTimeout(() => { un(); res(false); }, Math.max(500, timeoutMs - (performance.now() - t0)));
-            const un = p.onRender.subscribe(() => { clearTimeout(timer); un(); res(true); });
-            p.requestRender();
-          });
-          await nextFrame(); await nextFrame();
-          if (drawn && playerEl()?.player?.playback.frame === frame) return true;
-        } else if (performance.now() - lastIssue > 500) {
-          seek(frame / fps);
-          lastIssue = performance.now();
-        }
+  // One compositor per mounted preview; it diffs timelines into layers.
+  useEffect(() => {
+    const c = new Compositor(stageHost.current!, {
+      mode: 'preview', base: assetBaseUrl(), assets: refs,
+      onError: (clip, msg) => setErrors(e => (e[clip] === msg ? e : { ...e, [clip]: msg })),
+      onFrame: f => report(f),
+    });
+    comp.current = c;
+    return () => { c.destroy(); comp.current = null; };
+  }, []);
+
+  /** Show `f` now, then settle it exactly (latest call wins). */
+  const settle = (f: number) => {
+    const c = comp.current;
+    if (!c) return Promise.resolve(false);
+    const token = ++settleToken.current;
+    c.show(f);
+    report(f);
+    return c.seek(f).then(() => token === settleToken.current, () => false);
+  };
+
+  useEffect(() => {
+    const c = comp.current;
+    if (!c) return;
+    setErrors({});
+    c.setTimeline(tl, refs);
+    if (!c.playing) void settle(Math.min(frameRef.current, Math.max(0, tl.duration - 1)));
+  }, [tl, refs]);
+
+  // Hot reload: a scene's files changed on disk.
+  const prevRev = useRef<Record<string, number>>({});
+  useEffect(() => {
+    const c = comp.current;
+    if (!c || !props.sceneRev) return;
+    for (const [name, rev] of Object.entries(props.sceneRev)) {
+      if (prevRev.current[name] !== rev) {
+        c.reloadScene(name);
+        setErrors({});
       }
-      await new Promise(r => setTimeout(r, 50));
     }
-    return false;
-  };
+    prevRev.current = { ...props.sceneRev };
+    if (!c.playing) void settle(frameRef.current);
+  }, [props.sceneRev]);
 
-  /** User seeks: frame-exact, and flag a stall instead of freezing silently. */
-  const userSeek = (t: number) => {
-    seek(t);
-    const frame = Math.round(t * tl.fps.num / tl.fps.den);
-    seekAndSettle(frame, 5000).then(ok => setStalled(!ok));
+  // Fit the stage into the panel.
+  useEffect(() => {
+    const el = viewport.current!;
+    const ro = new ResizeObserver(() => {
+      const r = el.getBoundingClientRect();
+      setScale(Math.max(0.05, Math.min((r.width - 24) / tl.width, (r.height - 24) / tl.height)));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [tl.width, tl.height]);
+
+  const toggle = () => {
+    const c = comp.current;
+    if (!c) return;
+    if (c.playing) { c.pause(); setPlaying(false); void settle(frameRef.current); }
+    else { c.play(); setPlaying(true); }
   };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (e.code !== 'Space' || t?.closest('input, textarea, select, [contenteditable], .xterm')) return;
+      e.preventDefault();
+      toggle();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+  // Stop at the end.
+  useEffect(() => { if (playing && !comp.current?.playing) setPlaying(false); }, [frame]);
 
   if (props.handle) {
-    props.handle.current = { canvas: () => findCanvas(host.current), seek: userSeek, seekFast: seek, seekAndSettle };
+    props.handle.current = {
+      canvas: () => null,
+      seek: t => { void settle(Math.round(t * fps)); },
+      seekFast: t => { const f = Math.round(t * fps); comp.current?.show(f); report(f); },
+      seekAndSettle: async f => settle(f),
+    };
   }
 
+  const errList = Object.entries(errors);
   return (
-    <div className="preview" ref={host}>
-      {!mounted ? null : tl.duration === 0 ? (
-        <div className="empty">Empty timeline — add clips with <code>kurn op clip.add</code> or ask an agent.</div>
-      ) : (
-        <Player
-          key={playerKey}
-          project={project}
-          controls
-          variables={variables}
-          fps={tl.fps.num / tl.fps.den}
-          onTimeUpdate={t => { wantTime.current = t; props.onTime(t); }}
-          timeDisplayFormat="MM:SS.mm"
-        />
-      )}
-      {missing > 0 && <div className="badge warn">resolving {missing} asset(s)…</div>}
-      {stalled && (
-        <div className="badge warn stalled" role="alert">
-          Preview stalled on this frame.{' '}
-          <button onClick={() => { setStalled(false); setPlayerKey(k => k + 1); setTimeout(() => seekAndSettle(Math.round(wantTime.current * tl.fps.num / tl.fps.den)), 500); }}>Reload preview</button>
+    <div className="preview" ref={viewport}>
+      <div className="stage-frame" style={{ width: tl.width * scale, height: tl.height * scale }}>
+        <div ref={stageHost} style={{ transform: `scale(${scale})`, transformOrigin: '0 0', width: tl.width, height: tl.height }} />
+        {tl.duration === 0 && <div className="empty overlay">Empty timeline — drop media or a scene on the timeline, or ask an agent.</div>}
+      </div>
+      <div className="transport" data-frame={frame}>
+        <button onClick={toggle} aria-label={playing ? 'Pause' : 'Play'} title="Play/Pause (Space)">{playing ? '❚❚' : '▶'}</button>
+        <span className="tc">{fmt(frame, fps)}</span>
+        <span className="muted">/ {fmt(tl.duration, fps)}</span>
+      </div>
+      {errList.length > 0 && (
+        <div className="scene-errors" role="alert">
+          {errList.slice(0, 3).map(([clip, msg]) => <div key={clip}><b>{clip}</b> {msg.split('\n')[0]}</div>)}
+          {errList.length > 3 && <div className="muted">+{errList.length - 3} more</div>}
         </div>
       )}
     </div>
   );
-}
-
-/** The Player renders inside <revideo-player>'s shadow root. */
-export function findCanvas(root: ParentNode | null | undefined): HTMLCanvasElement | null {
-  if (!root) return null;
-  const direct = root.querySelector('canvas');
-  if (direct) return direct;
-  for (const el of root.querySelectorAll('*')) {
-    const found = el.shadowRoot ? findCanvas(el.shadowRoot) : null;
-    if (found) return found;
-  }
-  return null;
 }

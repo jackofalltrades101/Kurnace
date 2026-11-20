@@ -51,7 +51,7 @@ i=0; until curl -sf http://localhost:1420/kurnace.html >/dev/null 2>&1; do
   i=$((i+1)); [ $i -gt 40 ] && { echo "timeout starting Vite"; exit 1; }; sleep 0.5
 done
 (node "$ROOT/app/scripts/ui-shot.mjs" "$WORK/p" "$OUT" --width 1500 --height 900 --wait 4500 \
-  --eval "(async()=>{document.querySelector('.revideo-player-root button')?.click();await new Promise(r=>setTimeout(r,1200));window.__played=document.querySelector('revideo-player')?.player?.playback?.frame??0;[...document.querySelectorAll('.render-bar button')].find(b=>b.textContent?.includes('Still'))?.click();await new Promise(r=>setTimeout(r,4500));})()" \
+  --eval "(async()=>{document.querySelector('.transport button')?.click();await new Promise(r=>setTimeout(r,1200));window.__played=Number(document.querySelector('.transport')?.dataset.frame??0);[...document.querySelectorAll('.render-bar button')].find(b=>b.textContent?.includes('Still'))?.click();await new Promise(r=>setTimeout(r,4500));})()" \
   --probe "({canvas:!!document.querySelector('canvas.tl-canvas'),who:[...document.querySelectorAll('.tl-who')].map(e=>e.textContent),pending:!!document.querySelector('.pending-dialog'),played:window.__played,still:document.querySelector('.render-out code')?.textContent,clips:document.querySelector('.tl-tools-2')?.textContent?.match(/\\d+ clips/)?.[0]})" \
   >"$LOG" 2>&1 & echo $! > "$WORK/ui.pid")
 i=0; until grep -q '^saved ' "$LOG"; do

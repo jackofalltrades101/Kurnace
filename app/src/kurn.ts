@@ -30,6 +30,11 @@ export async function initAssets() {
   assetBase = await invoke<string>('asset_base');
 }
 
+/** Base URL of the app's asset server (media, frames, scenes). */
+export const assetBaseUrl = () => assetBase;
+/** Point the asset server's scene routes at the open project. */
+export const setAssetProject = (project: string) => invoke('asset_set_project', { project });
+
 /** Loopback HTTP URL for a library asset (served by the backend with Range support). */
 export function assetUrl(id: string, ext?: string | null): string {
   return `${assetBase}/${ext ? `${id}.${ext}` : id}`;
@@ -48,6 +53,7 @@ export type DocEvent =
   | { project: string; kind: 'op'; event: { record: OpRecord } }
   | { project: string; kind: 'presence'; event: { presence: Presence[] } }
   | { project: string; kind: 'pending'; event: { pending: PendingOp[] } }
+  | { project: string; kind: 'scene'; event: { name: string } }
   | { project: string; kind: 'error'; event: { error: string } }
   | { project: string; kind: 'closed' };
 

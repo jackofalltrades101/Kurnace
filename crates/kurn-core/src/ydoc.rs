@@ -136,6 +136,15 @@ pub fn write_clip(txn: &mut TransactionMut, clips: &MapRef, id: &str, c: &Clip) 
     if let Some(comp) = &c.component {
         set(txn, &m, "component", &Value::from(comp.clone()));
     }
+    if let Some(scene) = &c.scene {
+        set(txn, &m, "scene", &Value::from(scene.clone()));
+    }
+    if !c.params.is_empty() {
+        let params: MapRef = m.insert(txn, "params", MapPrelim::default());
+        for (k, v) in &c.params {
+            set(txn, &params, k, v);
+        }
+    }
     set(txn, &m, "start", &Value::from(c.start));
     set(txn, &m, "in", &Value::from(c.in_));
     set(txn, &m, "out", &Value::from(c.out));
@@ -264,6 +273,8 @@ pub fn read_timeline<T: ReadTxn>(txn: &T, root: &MapRef) -> Result<Timeline> {
                     .to_string(),
                 asset: c.get("asset").and_then(Value::as_str).map(String::from),
                 component: c.get("component").and_then(Value::as_str).map(String::from),
+                scene: c.get("scene").and_then(Value::as_str).map(String::from),
+                params: obj(c.get("params").unwrap_or(&Value::Null)),
                 start: int(&c, "start"),
                 in_: int(&c, "in"),
                 out: int(&c, "out"),

@@ -14,13 +14,19 @@ A local desktop tool where a person and AI agents build videos programmatically,
 | 5 — 3D/Godot | Done (dev build). `godot.render` (Godot 4.7.2 **.NET/C#**), `three.render` (headless Chromium), tree-hashed seq assets with native fps, sequence playback in renders, variants |
 | 6 — Polish | Implemented (dev): local semantic search, API budgets + status, export presets, activity feed, opt-in module sandbox. Production signing/notarization remains. |
 
+## v2 rework
+
+See [`docs/v2-plan.md`](docs/v2-plan.md). Phases B and C have landed:
+- **B: compositor and live scenes.** Revideo is gone. Timelines can hold live HTML **scenes** (`kurn scene new`) that hot-reload in the preview and render frame-exactly.
+- **C: real-time timeline.** Edits are optimistic, with drag and drop from the library and Finder, an inspector, context menus, and rendered transitions.
+
 ## Layout
 
 ```
 crates/kurn-core   core library: ops, timeline/board docs, persistence, library, modules, socket server
 crates/kurn        `kurn` CLI and `kurn daemon`
 packages/timeline  timeline model + validator (TypeScript, shared with the renderer)
-modules/           render.revideo, godot.render (C#), three.render, tts.fish, tts.say, audio.clean, gen.python
+modules/           render.compositor, godot.render (C#), three.render, tts.fish, tts.say, audio.clean, gen.python
 app/               Tauri app: src-tauri (core client, asset scheme, PTYs) + src (React UI)
 projects/demo      demo project
 scripts/           parity, phase-1 exit and stress tests, test-all
@@ -73,7 +79,6 @@ KURN_PROJECT=$PWD/../projects/demo pnpm tauri dev    # or omit KURN_PROJECT to p
 
 ## Known issues
 
-- **Preview can stall after seeking (macOS/WKWebView, intermittent).** Revideo's preview waits on `<video>` `seeked` events that WebKit sometimes never fires. The app detects it and offers **Reload preview**. Final output is unaffected: renders run in headless Chromium, the source of truth (spec §10.4). Details: `modules/render.revideo/README.md`.
 - **macOS distribution:** `scripts/build-mac-app.sh` stages the core sidecar, modules, Node and the Chromium cache, builds `Kurnace.app` (~974 MB) plus a DMG (~426 MB), and ad-hoc signs the app. Apple developer signing/notarization still needs credentials. ffmpeg/ffprobe and Python 3 remain external prerequisites for the media/TTS/generator modules.
 - **Over-budget module runs need the app open to approve.** They return a pending request and exit code 3; a human approves in the same dialog used for destructive ops. `KURN_BUDGET_OVERRIDE=1` remains an explicit CLI escape hatch.
 - **Module sandbox is opt-in and not a full security boundary.** `KURN_SANDBOX=1` wraps modules in a macOS `sandbox-exec` profile that limits writes to the job workdir, module dir, temp and language caches. Reads stay open, and network access is not restricted; untrusted/agent-authored modules still need the Phase 6+ review gate (Q5).
